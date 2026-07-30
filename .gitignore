@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+# runtime logs - not source, not needed in the repo
+logs/*.jsonl
+
+# debug screenshots - several of these show your account/character name in
+# the RuneLite window title and chat, not something to publish in a public
+# repo alongside a botting tool
+shots/*.png
