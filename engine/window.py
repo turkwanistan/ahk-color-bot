@@ -23,6 +23,12 @@ def find_runelite_rect(title_substring="RuneLite"):
 
     win32gui.EnumWindows(_enum_handler, None)
 
+    # an exact title wins over substring hits -- "World of Warcraft" would
+    # otherwise also match a browser window showing a WoW site
+    exact = [h for h in matches if win32gui.GetWindowText(h).lower() == title_substring.lower()]
+    if exact:
+        matches = exact
+
     if not matches:
         raise WindowNotFoundError(f"No visible window with '{title_substring}' in its title")
     if len(matches) > 1:
@@ -31,6 +37,13 @@ def find_runelite_rect(title_substring="RuneLite"):
         )
 
     return win32gui.GetWindowRect(matches[0])
+
+
+def is_foreground(title_substring):
+    """True if the focused window's title contains title_substring -- check
+    before sending keys so they never land in some other app."""
+    title = win32gui.GetWindowText(win32gui.GetForegroundWindow())
+    return title_substring.lower() in title.lower()
 
 
 def to_absolute(rect, rel_x, rel_y):

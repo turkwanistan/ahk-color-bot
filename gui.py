@@ -13,7 +13,7 @@ import pyautogui
 
 from engine import window
 from engine.killswitch import KillSwitch
-from run import TASKS, arm_window_corner_failsafe
+from run import TASKS, arm_window_corner_failsafe, coerce, window_title
 
 BG = "#0d0f0d"
 BG_PANEL = "#121412"
@@ -163,13 +163,12 @@ class BotGUI:
             ttk.Entry(self.params_frame, textvariable=var, width=15).grid(
                 row=i, column=1, sticky="w", padx=5, pady=2
             )
-            self.param_widgets[spec["name"]] = (var, spec["type"])
+            self.param_widgets[spec["name"]] = (var, spec)
 
     def _collect_params(self):
         params = {}
-        for name, (var, type_) in self.param_widgets.items():
-            raw = var.get()
-            params[name] = int(raw) if type_ == "int" else raw
+        for name, (var, spec) in self.param_widgets.items():
+            params[name] = coerce(spec, var.get())
         return params
 
     def _on_start(self):
@@ -182,7 +181,7 @@ class BotGUI:
         self.log_path = os.path.join(log_dir, f"{task_key}_{int(time.time())}.jsonl")
 
         try:
-            arm_window_corner_failsafe()
+            arm_window_corner_failsafe(window_title(task_module))
         except window.WindowNotFoundError as e:
             self.status_var.set(f"ERROR: {e}")
             return
