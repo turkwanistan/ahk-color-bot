@@ -307,6 +307,12 @@ def save_shot(enabled, name, img):
         cv2.imwrite(os.path.join(SHOTS_DIR, name), img)
 
 
+# a loud splash over a noisier background (cave ambience, other players) can
+# stay under the main ratio: 2 of 4 cave timeouts were 0.09 RMS bursts at
+# 2.5-2.8x. Replay of 92 audio bite casts: this rule never fired early.
+LOUD_SPLASH_RMS, LOUD_SPLASH_RATIO = 0.08, 2.3
+
+
 def heard_splash(meter, ratio, floor):
     """(heard, loudest RMS in the last 0.15 s, reference). Reference = median
     loudness of the 3 s before that, so steady music/ambience raises the bar
@@ -319,7 +325,9 @@ def heard_splash(meter, ratio, floor):
         return False, 0.0, 0.0
     ref = float(np.median(before)) if len(before) >= 25 else 0.0
     loud = max(recent)
-    return loud >= max(floor, ratio * ref), loud, ref
+    heard = loud >= max(floor, ratio * ref) or (
+        loud >= LOUD_SPLASH_RMS and loud >= LOUD_SPLASH_RATIO * ref)
+    return heard, loud, ref
 
 
 def wait_for_bite(win_rect, box, cell, threshold, deadline, kill_switch, ratio=0.0,

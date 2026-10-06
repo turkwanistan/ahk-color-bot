@@ -144,6 +144,9 @@ def demo():
     heard, loud, ref = wow_fish.heard_splash(FakeMeter(calm + [(now - 0.05, 0.2)]), 2.5, 0.02)
     assert heard and loud == 0.2 and ref == 0.05
     assert not wow_fish.heard_splash(FakeMeter([(now - 0.05, 0.01)]), 2.5, 0.02)[0]  # silence before: floor rules
+    noisy = [(now - 3 + i * 0.02, 0.035) for i in range(140)]
+    assert wow_fish.heard_splash(FakeMeter(noisy + [(now - 0.05, 0.09)]), 3.0, 0.03)[0]  # loud over noise
+    assert not wow_fish.heard_splash(FakeMeter(noisy + [(now - 0.05, 0.07)]), 3.0, 0.03)[0]
 
     ks.triggered.set()  # F12 ends the wait without a bite
     frames = iter(bob * 3)
