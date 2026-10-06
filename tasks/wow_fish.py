@@ -4,28 +4,31 @@ Screen-reading only: mss frames, the OS cursor handle and OS-level
 mouse/keyboard input. Nothing reads, hooks or modifies the game client.
 
 In-game setup before every run:
-- Auto Loot on (Options > Controls).
-- Fishing on an action-bar key matching the "Fishing key" param.
-- First-person view (scroll fully in), facing open water, camera still.
-- UI hidden with Alt+Z, so no nameplates or tooltips sit over the water.
-- At least "Max casts" free bag slots -- full bags are not detected.
+- Auto Loot on (Options > Controls); Fishing on the "Fishing key" slot.
+- Face plain open water (no fishing pool, no NPC traffic), camera still.
+  The UI may stay visible as long as nothing overlaps the water region;
+  hide nameplates and close bags.
+- Free bag slots for the run -- full bags are not detected.
+- For audio bites: WoW sound effects on, music off, volume steady.
 - Optional fast path: `/console SoftTargetInteract 3` and bind
   "Interact With Target"; put that key in "Interact key" to skip the
   bobber scan.
 
-Calibration (never guessed): capture the window with debug_wow_shot.py,
-pick the water region from that screenshot, then run once with
-splash threshold 0 (observe-only: logs per-cast diff peaks, never clicks)
-and set the threshold between the bobbing baseline and the splash peaks.
+Calibration per spot/camera (never guessed): cast, rest the mouse on the
+bobber, run debug_wow_shot.py. It saves the window and prints the bobber
+cursor signature and position; pick water_region from the screenshot
+(cover where casts land, high casts included) and pass bobber_hint and
+bobber_cursor_sig.
 
-Verified 2026-10-06, Stormwind canal at night, 2560x1440 windowed-fullscreen,
-UI visible: water_region=860,540,1540,790 (top edge below the far quay --
-patrolling guards there light the cursor too), bite_box=120,
-splash_threshold=3.5 as the floor under splash_ratio=2.0 (a 4.5 floor missed a
-faint 4.36 splash on a calm cast; no-bite peaks stay under 2x their p95).
-Bobbing p95 1-3.2, splash peaks 5.5-14.8. Last live
-run: 10 casts, bobber found in 1-3 hovers, 7 bites -> 7 fish (bag diff). 25-cast sunrise run (ratio 2.0, floor
-4.5, 3 consecutive): 16 bites -> 16 fish, 2-3 splashes missed -> this tuning.
+Recommended settings, all verified live 2026-10-06 by bag diffs:
+- Bites by sound (audio=1 audio_ratio=3.0 audio_floor=0.03): 19 clicks ->
+  18 fish at night on Lordamere, where visual detection fell to 45-75%;
+  then 155 casts, 151 bites, Fishing 201 -> 225. Works day or night.
+- Visual-only fallback: daylight defaults (spike 3-of-5 over 1.6x bobbing
+  p95, held-splash rule 1.6) ran 87-98%; at night use sustain_ratio=0
+  (held rule fires on wind-chopped water) and accept missed splashes.
+- Bobber find: cursor shape (bobber_cursor_sig) + landing history; median
+  2 hovers, grid_step ~half the bobber's on-screen width.
 """
 import os
 import time
@@ -34,6 +37,7 @@ import zlib
 import cv2
 import numpy as np
 import pyautogui
+import pywintypes
 import win32gui
 import win32ui
 
@@ -58,6 +62,25 @@ PARAMS = [
     # at 31.9 s after the key press), not 21 -- the wait also ends early as
     # soon as the bobber's cursor goes away, so this is only a ceiling
     {"name": "cast_timeout_s", "label": "Max wait per cast (seconds)", "type": "float", "default": 33.0},
+    # the calibration shot's bobber position (debug_wow_shot.py prints the
+    # cursor): seeds the landing history so cast 1 searches near it too --
+    # without it, a sunset-glitter first cast took 40 hovers (2026-10-06)
+    # held-splash rule strength (x the cast's bobbing median); 0 turns it off.
+    # 1.6 rescued daylight misses but fired on wind-roughened dusk water
+    # (2026-10-06 ~16:30 UTC); raise it or 0 it when false clicks appear
+    # spike rule: this many of the last 5 polls over threshold. 3 filters
+    # one-frame twitches; 2 catches short night splashes (replay of 389
+    # casts: +9/30 timeouts caught for 2 false clicks)
+    {"name": "confirm_frames", "label": "Spike polls needed of 5", "type": "int", "default": 3},
+    {"name": "sustain_ratio", "label": "Held-splash x bobbing (0 = off)", "type": "float", "default": 1.6},
+    # splash by sound (engine/audio.py, WASAPI loopback of the speakers):
+    # audio_ratio > 0 makes audio decide the bite, x the median loudness of
+    # the previous 3 s, and at least audio_floor RMS. 0 = visual only (audio
+    # still logged to the series file when audio=1, for calibration)
+    {"name": "audio", "label": "Log/use speaker audio (0/1)", "type": "int", "default": 0},
+    {"name": "audio_ratio", "label": "Splash x recent loudness (0 = off)", "type": "float", "default": 0.0},
+    {"name": "audio_floor", "label": "Splash min RMS", "type": "float", "default": 0.02},
+    {"name": "bobber_hint", "label": "Bobber hint x,y (shot)", "type": "str", "default": ""},
     {"name": "bobber_cursor_sig", "label": "Bobber cursor sig (blank = any)", "type": "str", "default": ""},
     {"name": "save_shots", "label": "Save debug shots (0/1)", "type": "int", "default": 1},
 ]
@@ -104,12 +127,30 @@ def cursor_handle():
     return win32gui.GetCursorInfo()[1]
 
 
+def current_cursor_signature(retries=3):
+    """Signature of the cursor now, re-reading the handle if WoW freed it
+    mid-read -- a None here used to count as "not the bobber", so a hover
+    right on it could be skipped (cast 4 of a 2026-10-06 run: 111 hovers)."""
+    for _ in range(retries):
+        sig = cursor_signature(cursor_handle())
+        if sig is not None:
+            return sig
+        time.sleep(0.02)
+    return None
+
+
 def cursor_signature(hcursor):
     """CRC of the cursor's bitmaps. WoW hands out a new cursor handle every
     cast, but a given cursor *shape* keeps its pixels -- so the bobber's
     interact cursor can be told apart from an NPC's (a quay guard locked the
     scan once on 2026-10-06)."""
-    info = win32gui.GetIconInfo(hcursor)
+    try:
+        info = win32gui.GetIconInfo(hcursor)
+    except pywintypes.error:
+        # WoW swaps/frees cursor handles constantly; one can die between
+        # GetCursorInfo and here (crashed a run 2026-10-06). Treat as "no
+        # match" -- the next hover reads a fresh handle.
+        return None
     try:
         crc = 0
         for hbm in info[3:5]:
@@ -204,7 +245,7 @@ def find_bobber(win_rect, points, baseline, kill_switch, want_sig=None):
         if want_sig is not None:
             # by shape, not by "differs from baseline": the baseline hover can
             # itself land on a lingering bobber (cast 9, 2026-10-06)
-            sig = cursor_signature(h)
+            sig = current_cursor_signature()
             if sig == want_sig:
                 return (x, y), i + 1, misses
             if h != baseline:
@@ -266,8 +307,24 @@ def save_shot(enabled, name, img):
         cv2.imwrite(os.path.join(SHOTS_DIR, name), img)
 
 
+def heard_splash(meter, ratio, floor):
+    """(heard, loudest RMS in the last 0.15 s, reference). Reference = median
+    loudness of the 3 s before that, so steady music/ambience raises the bar
+    and only a sudden sound -- the splash -- crosses it."""
+    now = time.time()
+    levels = meter.since(now - 3.15)
+    recent = [v for t, v in levels if t > now - 0.15]
+    before = [v for t, v in levels if t <= now - 0.15]
+    if not recent:
+        return False, 0.0, 0.0
+    ref = float(np.median(before)) if len(before) >= 25 else 0.0
+    loud = max(recent)
+    return loud >= max(floor, ratio * ref), loud, ref
+
+
 def wait_for_bite(win_rect, box, cell, threshold, deadline, kill_switch, ratio=0.0,
-                  bobber_cursor=None, relocate=None):
+                  bobber_cursor=None, relocate=None, sustain_ratio=SUSTAIN_RATIO,
+                  confirm_frames=CONFIRM_FRAMES, audio=None):
     """Poll the box; return (bit, peak_diff, frame_at_peak, diffs). A bite is
     CONFIRM_FRAMES consecutive frames over threshold: the splash lasts, a
     single bobbing twitch doesn't (live run: 10 clicks, 8 catches when one
@@ -281,7 +338,11 @@ def wait_for_bite(win_rect, box, cell, threshold, deadline, kill_switch, ratio=0
 
     With bobber_cursor (the handle seen while hovering the bobber; the mouse
     stays parked on it), the wait also ends when that cursor goes away --
-    the bobber despawned, so the cast is over. Returns gone=True then."""
+    the bobber despawned, so the cast is over. Returns gone=True then.
+
+    With audio=(meter, ratio, floor) and ratio > 0 the splash SOUND decides
+    the bite instead of the frames -- at night on wind-chopped water the
+    visual signal clicked on waves as often as on bites (22 clicks, 10 fish)."""
     prev = capture.grab_region(win_rect, box)
     peak, peak_frame, diffs, recent = 0.0, prev, [], []
     sustain_thr = None
@@ -296,11 +357,17 @@ def wait_for_bite(win_rect, box, cell, threshold, deadline, kill_switch, ratio=0
             if relocate is None or not relocate():
                 return False, peak, peak_frame, diffs, threshold, True
             bobber_cursor = cursor_handle()
+        if audio is not None and audio[1] > 0:
+            heard, loud, ref = heard_splash(*audio)
+            if heard:
+                wait_for_bite.last_audio = (loud, ref)
+                return True, peak, peak_frame, diffs, threshold, False
         cur = capture.grab_region(win_rect, box)
         d = float(cell_diffs(prev, cur, cell).max())
         diffs.append(d)
         if ratio > 0 and len(diffs) == FLOOR_FRAMES and threshold > 0:
-            sustain_thr = max(threshold, SUSTAIN_RATIO * float(np.median(diffs)))
+            sustain_thr = (max(threshold, sustain_ratio * float(np.median(diffs)))
+                           if sustain_ratio > 0 else None)
             threshold = max(threshold, ratio * float(np.percentile(diffs, 95)))
         if d > peak:
             peak, peak_frame = d, cur
@@ -308,7 +375,7 @@ def wait_for_bite(win_rect, box, cell, threshold, deadline, kill_switch, ratio=0
         recent = (recent + [0 < threshold <= d and not measuring])[-CONFIRM_WINDOW:]
         sustained = (sustain_thr is not None and len(diffs) > FLOOR_FRAMES + SUSTAIN_FRAMES
                      and float(np.median(diffs[-SUSTAIN_FRAMES:])) >= sustain_thr)  # median: one twitch can't carry it
-        if sum(recent) >= CONFIRM_FRAMES or sustained:
+        if (sum(recent) >= confirm_frames or sustained) and not (audio is not None and audio[1] > 0):
             return True, peak, peak_frame, diffs, threshold, False
         prev = cur
     return False, peak, peak_frame, diffs, threshold, False
@@ -328,7 +395,13 @@ def run(params, log_path, kill_switch=None):
     want_sig = int(params["bobber_cursor_sig"]) if str(params["bobber_cursor_sig"]).strip() else None
     shots = bool(params["save_shots"])
     run_id = int(time.time())
-    log.log("run_start", **params, observe_only=threshold <= 0)
+    log.log("run_start", **params, observe_only=threshold <= 0 and params["audio_ratio"] <= 0)
+    meter = None
+    if params["audio"]:
+        from engine.audio import LoopbackMeter
+        meter = LoopbackMeter()
+        log.log("audio_on", device=meter.device)
+    audio = (meter, params["audio_ratio"], params["audio_floor"]) if meter else None
 
     def killed():
         return kill_switch is not None and kill_switch.triggered.is_set()
@@ -343,6 +416,8 @@ def run(params, log_path, kill_switch=None):
 
     stats = dict(casts=0, no_bobber=0, bites=0, timeouts=0, loot_clicks=0)
     history = []  # recent bobber landing spots, newest last
+    if str(params["bobber_hint"]).strip():
+        history.append(tuple(int(v) for v in params["bobber_hint"].split(",")))
     start = time.time()
     while stats["casts"] < params["max_casts"] and time.time() - start < params["duration_s"]:
         if killed():
@@ -412,8 +487,9 @@ def run(params, log_path, kill_switch=None):
             cell = min(box[2] - box[0], box[3] - box[1])
 
         def on_bobber():
-            h = cursor_handle()
-            return cursor_signature(h) == want_sig if want_sig is not None else h != baseline
+            if want_sig is not None:
+                return current_cursor_signature() == want_sig
+            return cursor_handle() != baseline
 
         def relocate():
             """Hover a small ring around the bobber; re-park on it if found."""
@@ -428,12 +504,15 @@ def run(params, log_path, kill_switch=None):
         bit, peak, frame, diffs, used_thr, gone = wait_for_bite(
             win_rect, box, cell, threshold, deadline, kill_switch, params["splash_ratio"],
             bobber_cursor=None if interact_key else cursor_handle(),
-            relocate=None if interact_key else relocate)
+            relocate=None if interact_key else relocate, sustain_ratio=params["sustain_ratio"],
+            confirm_frames=params["confirm_frames"], audio=audio)
         if killed():
             break
         waited = round(time.time() - cast_ts, 2)
         series_log.log("series", n=n, bit=bit, gone=gone, waited_s=waited,
-                       threshold=round(used_thr, 2), diffs=[round(v, 2) for v in diffs])
+                       threshold=round(used_thr, 2), diffs=[round(v, 2) for v in diffs],
+                       audio=[(round(t - cast_ts, 2), round(v, 4)) for t, v in meter.since(cast_ts)]
+                       if meter else None)
         floor = dict(p50=round(float(np.percentile(diffs, 50)), 2),
                      p95=round(float(np.percentile(diffs, 95)), 2),
                      second=round(sorted(diffs)[-2], 2),
@@ -448,7 +527,10 @@ def run(params, log_path, kill_switch=None):
             continue
 
         stats["bites"] += 1
-        log.log("bite", n=n, waited_s=waited, diff=round(peak, 2), **floor)
+        heard = getattr(wait_for_bite, "last_audio", None) if audio and audio[1] > 0 else None
+        wait_for_bite.last_audio = None
+        log.log("bite", n=n, waited_s=waited, diff=round(peak, 2), **floor,
+                **({"audio_rms": round(heard[0], 4), "audio_ref": round(heard[1], 4)} if heard else {}))
         save_shot(shots, f"wow_fish_{run_id}_{n:02d}_bite.png", frame)
         slow = np.random.random() < SLOW_REACTION_P
         if humanize.rest(*(SLOW_REACTION_MS if slow else (180, 550)), kill_switch=kill_switch):
@@ -464,4 +546,6 @@ def run(params, log_path, kill_switch=None):
 
     if killed():
         log.log("kill_switch_triggered")
+    if meter:
+        meter.close()
     log.log("run_end", **stats)

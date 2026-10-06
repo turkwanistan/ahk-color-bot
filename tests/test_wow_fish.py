@@ -131,6 +131,20 @@ def demo():
             None, (0, 0, 60, 60), 60, 20.0, float("inf"), ks, bobber_cursor=7)
     assert not bit and gone and len(diffs) == 3
 
+    # a cursor handle freed mid-read is "no match", not a crash
+    assert wow_fish.cursor_signature(0x7FFF0000) is None
+
+    # audio: steady ambience doesn't trip it, a sudden splash over it does
+    class FakeMeter:
+        def __init__(self, levels): self.levels = levels
+        def since(self, ts): return [(t, v) for t, v in self.levels if t > ts]
+    now = wow_fish.time.time()
+    calm = [(now - 3 + i * 0.02, 0.05) for i in range(140)]
+    assert not wow_fish.heard_splash(FakeMeter(calm + [(now - 0.05, 0.06)]), 2.5, 0.02)[0]
+    heard, loud, ref = wow_fish.heard_splash(FakeMeter(calm + [(now - 0.05, 0.2)]), 2.5, 0.02)
+    assert heard and loud == 0.2 and ref == 0.05
+    assert not wow_fish.heard_splash(FakeMeter([(now - 0.05, 0.01)]), 2.5, 0.02)[0]  # silence before: floor rules
+
     ks.triggered.set()  # F12 ends the wait without a bite
     frames = iter(bob * 3)
     with mock.patch.object(wow_fish.capture, "grab_region", lambda r, b: next(frames)):

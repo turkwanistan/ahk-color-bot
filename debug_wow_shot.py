@@ -18,4 +18,6 @@ print("window rect:", rect, "size:", right - left, "x", bottom - top)
 h = win32gui.GetCursorInfo()[1]
 print("cursor handle now:", h, "signature:", cursor_signature(h),
       "(hover the bobber for its bobber_cursor_sig)")
+x, y = win32gui.GetCursorInfo()[2]
+print("cursor at", (x - left, y - top), "-> --set bobber_hint=%d,%d if it is on the bobber" % (x - left, y - top))
 print("saved", out)
