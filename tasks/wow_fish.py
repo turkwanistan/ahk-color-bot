@@ -29,6 +29,9 @@ Recommended settings, all verified live 2026-10-06 by bag diffs:
   (held rule fires on wind-chopped water) and accept missed splashes.
 - Bobber find: cursor shape (bobber_cursor_sig) + landing history; median
   2 hovers, grid_step ~half the bobber's on-screen width.
+- Rough sea (Riverglades pier, 2026-10-07): add bobber_color=1 -- the red
+  feather is hovered first; 30/30 casts, 28 found on the first hover,
+  median scan 0.36 s (was 2-9 s), ~187 casts/h.
 """
 import os
 import time
@@ -81,6 +84,9 @@ PARAMS = [
     {"name": "audio_ratio", "label": "Splash x recent loudness (0 = off)", "type": "float", "default": 0.0},
     {"name": "audio_floor", "label": "Splash min RMS", "type": "float", "default": 0.02},
     {"name": "bobber_hint", "label": "Bobber hint x,y (shot)", "type": "str", "default": ""},
+    # hover the bobber's red feather first: on rough sea the novelty peaks are
+    # waves and the history spiral spent 50-140 hovers (Riverglades, 2026-10-07)
+    {"name": "bobber_color", "label": "Look for the red feather first (0/1)", "type": "int", "default": 0},
     {"name": "bobber_cursor_sig", "label": "Bobber cursor sig (blank = any)", "type": "str", "default": ""},
     {"name": "save_shots", "label": "Save debug shots (0/1)", "type": "int", "default": 1},
 ]
@@ -105,6 +111,9 @@ CAREFUL_HOVERS = 4  # first candidates get a person-paced move; a fallback sweep
 # plus an occasional slow one, and the odd pause where nothing happens. No
 # camera/zoom fidgets -- those would move the calibrated water region.
 SLOW_REACTION_P, SLOW_REACTION_MS = 0.08, (650, 1200)  # still inside the bite window
+BITE_REACTION_MS = (150, 400)  # was 180-550: bite->loot measured 1.0 s median (715 casts)
+# auto loot lands well inside this; was 1200-2200 (loot->recast 2.8 s median)
+LOOT_SETTLE_MS = (600, 1100)
 SHORT_BREAK_P, SHORT_BREAK_MS = 0.07, (3000, 8000)
 LONG_BREAK_P, LONG_BREAK_MS = 0.015, (15000, 45000)
 
@@ -204,7 +213,22 @@ def bobber_candidates(before, after, after2, step, k=6):
     return pts
 
 
-def scan_points(region, step, before, after, after2, history=()):
+def feather_points(img, k=2):
+    """Centres of the largest red blobs (the bobber's feather) plus a point on
+    the cork just below each. Replayed on 298 saved scan frames: the biggest
+    blob sat on the found bobber in ~78%, no red in ~16% (falls back to the
+    scan); a wrong blob costs one hover, the cursor shape rejects it."""
+    b, g, r = (img[..., i].astype(np.int16) for i in range(3))
+    mask = ((r - g > 45) & (r - b > 25)).astype(np.uint8)
+    n, _, stats, cents = cv2.connectedComponentsWithStats(mask)
+    pts = []
+    for i in sorted(range(1, n), key=lambda i: -stats[i, cv2.CC_STAT_AREA])[:k]:
+        cx, cy = (int(v) for v in cents[i])
+        pts += [(cx, cy + 20), (cx, cy)]
+    return pts
+
+
+def scan_points(region, step, before, after, after2, history=(), color=False):
     """Where recent bobbers landed (casts land within ~150 px of each other),
     then novelty peaks, then the whole grid -- spiralling out from the usual
     landing spot once there is history, by cell novelty before that. A dark,
@@ -220,6 +244,8 @@ def scan_points(region, step, before, after, after2, history=()):
         # (a circle spent 30-51 hovers reaching a bobber 120 px off-median)
         sx, sy = np.maximum(hist.std(axis=0), 20.0) if len(hist) > 2 else (60.0, 60.0)
         peaks = [(mx, my)] + peaks
+    if color:
+        peaks = [(x1 + x, y1 + y) for x, y in feather_points(after2)] + peaks
     nov = novelty(before, after, after2)
     rows, cols = nov.shape[0] // step, nov.shape[1] // step
     cells = nov[: rows * step, : cols * step].reshape(rows, step, cols, step).mean(axis=(1, 3))
@@ -471,7 +497,8 @@ def run(params, log_path, kill_switch=None):
             after = capture.grab_region(win_rect, region)
             time.sleep(humanize.jitter(0.3, 0.05, 0.2, 0.4))  # waves move on, the bobber stays
             after2 = capture.grab_region(win_rect, region)
-            points = scan_points(region, params["grid_step"], before, after, after2, history)
+            points = scan_points(region, params["grid_step"], before, after, after2, history,
+                                 color=bool(params["bobber_color"]))
             scan_start = time.time()
             bobber, hovers, misses = find_bobber(win_rect, points, baseline, kill_switch, want_sig)
             if bobber is not None:
@@ -541,7 +568,7 @@ def run(params, log_path, kill_switch=None):
                 **({"audio_rms": round(heard[0], 4), "audio_ref": round(heard[1], 4)} if heard else {}))
         save_shot(shots, f"wow_fish_{run_id}_{n:02d}_bite.png", frame)
         slow = np.random.random() < SLOW_REACTION_P
-        if humanize.rest(*(SLOW_REACTION_MS if slow else (180, 550)), kill_switch=kill_switch):
+        if humanize.rest(*(SLOW_REACTION_MS if slow else BITE_REACTION_MS), kill_switch=kill_switch):
             break
         if interact_key:
             press(interact_key)
@@ -550,7 +577,7 @@ def run(params, log_path, kill_switch=None):
         stats["loot_clicks"] += 1
         log.log("loot_click", n=n, via="interact_key" if interact_key else "right_click",
                 slow_reaction=slow)
-        humanize.rest(1200, 2200, kill_switch=kill_switch)  # auto loot + GCD before recasting
+        humanize.rest(*LOOT_SETTLE_MS, kill_switch=kill_switch)  # auto loot before recasting
 
     if killed():
         log.log("kill_switch_triggered")

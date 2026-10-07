@@ -37,6 +37,15 @@ def demo():
     assert len(set(pts)) == len(pts)
     json.dumps(pts)
 
+    # rough sea: a red feather far from the landing history is hovered first
+    sea = np.full((300, 400, 3), (60, 70, 50), np.uint8)  # BGR dusk water
+    sea[100:110, 300:310] = (40, 30, 130)  # feather
+    pts = wow_fish.scan_points((50, 50, 450, 350), 28, sea, sea, sea,
+                               [(60, 60)], color=True)
+    assert pts[0] == (50 + 304, 50 + 104 + 20) and pts[1] == (50 + 304, 50 + 104), pts[:3]
+    assert wow_fish.scan_points((50, 50, 450, 350), 28, sea, sea, sea, [(60, 60)])[0] == (60, 60)
+    json.dumps(pts)
+
     # bobbing (small diffs) stays under the threshold, the splash crosses it
     rng = np.random.default_rng(0)
     bob = [np.clip(still[:60, :60] + rng.integers(0, 4, (60, 60, 3)), 0, 255).astype(np.uint8)
