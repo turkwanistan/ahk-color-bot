@@ -213,18 +213,24 @@ def bobber_candidates(before, after, after2, step, k=6):
     return pts
 
 
+FEATHER_RED = ((45, 25), (35, 20))  # strict (day), then loose (night) R-G, R-B
+
+
 def feather_points(img, k=2):
     """Centres of the largest red blobs (the bobber's feather) plus a point on
     the cork just below each. Replayed on 298 saved scan frames: the biggest
-    blob sat on the found bobber in ~78%, no red in ~16% (falls back to the
-    scan); a wrong blob costs one hover, the cursor shape rejects it."""
+    strict blob sat on the found bobber in ~78%, no red in ~16% (falls back
+    to the scan); a wrong blob costs one hover, the cursor shape rejects it.
+    At night the strict cut found 0 of 13 feathers, the loose one 12 -- but
+    loose alone lost 19 of 311 daytime hits, so strict blobs go first."""
     b, g, r = (img[..., i].astype(np.int16) for i in range(3))
-    mask = ((r - g > 45) & (r - b > 25)).astype(np.uint8)
-    n, _, stats, cents = cv2.connectedComponentsWithStats(mask)
     pts = []
-    for i in sorted(range(1, n), key=lambda i: -stats[i, cv2.CC_STAT_AREA])[:k]:
-        cx, cy = (int(v) for v in cents[i])
-        pts += [(cx, cy + 20), (cx, cy)]
+    for rg, rb in FEATHER_RED:
+        mask = ((r - g > rg) & (r - b > rb)).astype(np.uint8)
+        n, _, stats, cents = cv2.connectedComponentsWithStats(mask)
+        for i in sorted(range(1, n), key=lambda i: -stats[i, cv2.CC_STAT_AREA])[:k]:
+            cx, cy = (int(v) for v in cents[i])
+            pts += [p for p in ((cx, cy + 20), (cx, cy)) if p not in pts]
     return pts
 
 
