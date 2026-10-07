@@ -37,6 +37,14 @@ def demo():
     assert len(set(pts)) == len(pts)
     json.dumps(pts)
 
+    # full bags: a wide line of pure-red error text trips the check, a feather doesn't
+    strip = np.full((200, 800, 3), (60, 40, 30), np.uint8)
+    strip[90:96, 250:450:2] = (30, 25, 240)  # "Inventory is full." glyph columns
+    assert wow_fish.red_error_text(strip)
+    strip = np.full((200, 800, 3), (60, 40, 30), np.uint8)
+    strip[80:100, 300:320] = (30, 30, 240)  # bright feather-sized blob
+    assert not wow_fish.red_error_text(strip)
+
     # rough sea: a red feather far from the landing history is hovered first
     sea = np.full((300, 400, 3), (60, 70, 50), np.uint8)  # BGR dusk water
     sea[100:110, 300:310] = (40, 30, 130)  # feather

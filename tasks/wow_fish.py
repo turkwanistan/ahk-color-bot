@@ -213,7 +213,21 @@ def bobber_candidates(before, after, after2, step, k=6):
     return pts
 
 
-FEATHER_RED = ((45, 25), (35, 20))  # strict (day), then loose (night) R-G, R-B
+FEATHER_RED = ((45, 25), (35, 20), (25, 15))  # strict (day), loose (night), dim (dawn) R-G, R-B
+# where UIErrorsFrame prints ("Inventory is full."), as window fractions
+ERROR_STRIP = (0.3, 0.05, 0.7, 0.3)
+
+
+def red_error_text(img):
+    """A line of WoW's saturated red error text: many pure-red pixels spread
+    across >= 120 px. The bobber's feather is a dark red ~20 px blob, so it
+    can't pass even if a cast lands inside the strip."""
+    b, g, r = (img[..., i].astype(np.int16) for i in range(3))
+    mask = (r > 200) & (g < 70) & (b < 70)
+    if mask.sum() < 80:
+        return False
+    cols = np.flatnonzero(mask.any(axis=0))
+    return cols[-1] - cols[0] >= 120
 
 
 def feather_points(img, k=2):
@@ -455,6 +469,7 @@ def run(params, log_path, kill_switch=None):
     log.log("waited_for_focus", focused=window.is_foreground(WINDOW_TITLE))
 
     stats = dict(casts=0, no_bobber=0, bites=0, timeouts=0, loot_clicks=0)
+    full_streak = 0  # loots in a row followed by a red error line
     history = []  # recent bobber landing spots, newest last
     if str(params["bobber_hint"]).strip():
         history.append(tuple(int(v) for v in params["bobber_hint"].split(",")))
@@ -515,12 +530,14 @@ def run(params, log_path, kill_switch=None):
                     scan_s=round(time.time() - scan_start, 2),
                     hit_sig=bobber and cursor_signature(cursor_handle()),
                     baseline_sig=baseline_sig, other_cursor_sigs=misses)
-            if killed():
-                break
+            # saved before the kill check: a search the user F12s out of is the
+            # one worth looking at
             if bobber is None or hovers > 2:  # keep the frames that fooled the ranking
                 save_shot(shots, f"wow_fish_{run_id}_{n:02d}_scan_before.png", before)
                 save_shot(shots, f"wow_fish_{run_id}_{n:02d}_scan_after.png", after)
                 save_shot(shots, f"wow_fish_{run_id}_{n:02d}_scan_after2.png", after2)
+            if killed():
+                break
             if bobber is None:
                 stats["no_bobber"] += 1
                 continue
@@ -584,6 +601,19 @@ def run(params, log_path, kill_switch=None):
         log.log("loot_click", n=n, via="interact_key" if interact_key else "right_click",
                 slow_reaction=slow)
         humanize.rest(*LOOT_SETTLE_MS, kill_switch=kill_switch)  # auto loot before recasting
+        # full bags: auto loot fails and WoW prints "Inventory is full." in red
+        # at the top -- a 2026-10-07 run kept fishing into 0/62 for its last part
+        w, h = win_rect[2] - win_rect[0], win_rect[3] - win_rect[1]
+        strip = tuple(int(f * s) for f, s in zip(ERROR_STRIP, (w, h, w, h)))
+        if red_error_text(capture.grab_region(win_rect, strip)):
+            full_streak += 1
+            save_shot(shots, f"wow_fish_{run_id}_{n:02d}_red_error.png",
+                      capture.grab_region(win_rect, strip))
+            if full_streak >= 2:  # one red line can be any error; two loots in a row is the bags
+                log.log("stopped_bags_full", n=n)
+                break
+        else:
+            full_streak = 0
 
     if killed():
         log.log("kill_switch_triggered")
