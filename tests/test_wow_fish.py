@@ -37,6 +37,16 @@ def demo():
     assert len(set(pts)) == len(pts)
     json.dumps(pts)
 
+    # F11 toggles pause, F12 still kills
+    from engine.killswitch import KillSwitch, HOTKEY, PAUSE_HOTKEY
+    ks = KillSwitch()
+    ks._on_press(PAUSE_HOTKEY)
+    assert ks.paused.is_set() and not ks.triggered.is_set()
+    ks._on_press(PAUSE_HOTKEY)
+    assert not ks.paused.is_set()
+    ks._on_press(HOTKEY)
+    assert ks.triggered.is_set()
+
     # full bags: a wide line of pure-red error text trips the check, a feather doesn't
     strip = np.full((200, 800, 3), (60, 40, 30), np.uint8)
     strip[90:96, 250:450:2] = (30, 25, 240)  # "Inventory is full." glyph columns

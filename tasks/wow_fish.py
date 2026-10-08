@@ -477,6 +477,16 @@ def run(params, log_path, kill_switch=None):
     while stats["casts"] < params["max_casts"] and time.time() - start < params["duration_s"]:
         if killed():
             break
+        if kill_switch is not None and kill_switch.paused.is_set():
+            # F11: hold between casts so the user can chat, clear bags or tab
+            # out; F11 again resumes once WoW has focus (F12 still stops)
+            log.log("paused", n=stats["casts"])
+            while kill_switch.paused.is_set() or not window.is_foreground(WINDOW_TITLE):
+                if humanize.rest(250, 250, kill_switch=kill_switch):
+                    break
+            if killed():
+                break
+            log.log("resumed", n=stats["casts"])
         win_rect = window.find_runelite_rect(WINDOW_TITLE)
         if not window.is_foreground(WINDOW_TITLE):
             log.log("stopped_not_foreground")  # never type into another app
@@ -593,6 +603,11 @@ def run(params, log_path, kill_switch=None):
         slow = np.random.random() < SLOW_REACTION_P
         if humanize.rest(*(SLOW_REACTION_MS if slow else BITE_REACTION_MS), kill_switch=kill_switch):
             break
+        if not window.is_foreground(WINDOW_TITLE):
+            # user tabbed out mid-cast (e.g. right after F11): never click or
+            # press into another app -- let this fish go
+            log.log("loot_skipped_not_foreground", n=n)
+            continue
         if interact_key:
             press(interact_key)
         else:

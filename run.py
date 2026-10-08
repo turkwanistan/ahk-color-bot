@@ -54,7 +54,7 @@ def main():
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, f"{args.task}_{int(time.time())}.jsonl")
     print(f"logging to {log_path}", flush=True)
-    print("press F12 at any time to stop immediately", flush=True)
+    print("press F12 at any time to stop immediately, F11 to pause/resume", flush=True)
 
     arm_window_corner_failsafe(window_title(task_module))
     kill_switch = KillSwitch()
